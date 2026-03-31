@@ -61,6 +61,8 @@ CommandLine::CommandLine(void)
 , redundancysize(0)
 , redundancyset(false)
 , recursive(false)
+, append(false)
+, appended(false)
 {
 }
 
@@ -133,6 +135,14 @@ void CommandLine::usage(void)
     "  -n<n>    : Number of recovery files (max 31) (don't use both -n and -l)\n"
     "  -R       : Recurse into subdirectories\n"
     "             (Be aware of wildcard shell expansion)\n"
+    "  --append  : Append PAR2 recovery data to a 7z archive\n"
+    "             (Requires exactly one .7z input file)\n"
+    "\n"
+    "Verify/Repair options:\n"
+    "  -p       : Purge backup and par files on success\n"
+    "  -O       : Only repair via rename\n"
+    "  --appended : Verify/repair 7z archive with appended PAR2 data\n"
+    "             (Input file should be .7z with PAR2 data appended)\n"
     "\n";
   std::cout <<
     "Example:\n"
@@ -826,17 +836,40 @@ bool CommandLine::ReadArgs(int argc, const char * const *argv)
 
         case '-':
           {
-	    if (argv[0] != std::string("--")) {
+            // Handle long options starting with "--"
+            std::string opt = argv[0];
+            if (opt == "--append")
+            {
+              if (operation != opCreate)
+              {
+                std::cerr << "Cannot specify --append unless creating." << std::endl;
+                return false;
+              }
+              append = true;
+            }
+            else if (opt == "--appended")
+            {
+              if (operation != opRepair && operation != opVerify)
+              {
+                std::cerr << "Cannot specify --appended unless verifying or repairing." << std::endl;
+                return false;
+              }
+              appended = true;
+            }
+            else if (opt == "--")
+            {
+              argc--;
+              argv++;
+              options = false;
+              continue;
+            }
+            else
+            {
               std::cerr << "Unknown option: " << argv[0] << std::endl;
-	      std::cerr << "  (Options must appear after create, repair or verify.)" << std::endl;
-	      std::cerr << "  (Run \"" << path << name << " --help\" for supported options.)" << std::endl;
+              std::cerr << "  (Options must appear after create, repair or verify.)" << std::endl;
+              std::cerr << "  (Run \"" << path << name << " --help\" for supported options.)" << std::endl;
               return false;
             }
-
-            argc--;
-            argv++;
-            options = false;
-            continue;
           }
           break;
         default:
@@ -1114,6 +1147,41 @@ bool CommandLine::CheckValuesAndSetDefaults() {
       }
     }
 
+    // Validate --append option
+    if (append)
+    {
+      if (extrafiles.size() != 1)
+      {
+        std::cerr << "--append requires exactly one input file." << std::endl;
+        return false;
+      }
+      
+      const std::string &inputfile = extrafiles[0];
+      if (inputfile.length() < 3 ||
+          0 != stricmp(inputfile.substr(inputfile.length() - 3).c_str(), ".7z"))
+      {
+        std::cerr << "--append requires the input file to have .7z extension." << std::endl;
+        return false;
+      }
+    }
+
+    // Validate --appended option for verify/repair
+    if (appended)
+    {
+      if (parfilename.length() < 3 ||
+          0 != stricmp(parfilename.substr(parfilename.length() - 3).c_str(), ".7z"))
+      {
+        std::cerr << "--appended requires the input file to have .7z extension." << std::endl;
+        return false;
+      }
+      
+      if (!DiskFile::FileExists(parfilename))
+      {
+        std::cerr << "Input file does not exist: " << parfilename << std::endl;
+        return false;
+      }
+    }
+
     // Strip the ".par2" from the end of the filename of the main PAR2 file.
     if (parfilename.length() > 5 && 0 == stricmp(parfilename.substr(parfilename.length()-5, 5).c_str(), ".par2"))
     {
@@ -1386,6 +1454,12 @@ bool CommandLine::SetParFilename(std::string filename)
       {
         parfilename = filename;
         version = verPar1;
+      }
+      else if (appended && 0 == stricmp(tail.c_str(), "7z"))
+      {
+        // For --appended, accept .7z files
+        parfilename = filename;
+        version = verPar2;
       }
 
       if (DiskFile::FileExists(filename)) {

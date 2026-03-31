@@ -49,11 +49,24 @@ public:
 		 const u64 skipleaway
 		 );
 
+  // Process a 7z file with appended PAR2 data
+  Result ProcessFrom7z(const size_t memorylimit,
+		 const std::string &basepath,
+		 const u32 nthreads,
+		 const u32 filethreads,
+		 std::string filename,
+		 const bool dorepair,
+		 const bool purgefiles,
+		 const bool renameonly,
+		 const bool skipdata,
+		 const u64 skipleaway
+		 );
+
 protected:
   // Steps in verifying and repairing files:
 
-  // Load packets from the specified file
-  bool LoadPacketsFromFile(std::string filename);
+  // Load packets from the specified file (starting at offset for appended PAR2)
+  bool LoadPacketsFromFile(std::string filename, u64 startOffset = 0);
   // Finish loading a recovery packet
   bool LoadRecoveryPacket(DiskFile *diskfile, u64 offset, PACKET_HEADER &header);
   // Finish loading a file description packet
@@ -148,6 +161,11 @@ protected:
   bool RemoveParFiles(void);
 
   static u32                          GetFileThreads(void) {return filethreads;}
+
+protected:
+  bool appendedMode;          // Are we processing a 7z with appended PAR2?
+  u64 appendedArchiveSize;    // Size of original 7z archive (without PAR2)
+  std::string appendedInputFile; // Input 7z filename (for output name)
 
 protected:
   std::ostream &sout; // stream for output (for commandline, this is cout)

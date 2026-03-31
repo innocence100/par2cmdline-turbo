@@ -219,4 +219,37 @@ bool ComputeRecoveryFileCount(std::ostream &sout,
 			      u64 largestfilesize,
 			      u64 blocksize);
 
+// Create PAR2 recovery data and append it directly to a 7z archive
+Result par2create_append(std::ostream &sout,
+			 std::ostream &serr,
+			 const NoiseLevel noiselevel,
+			 const size_t memorylimit,
+			 const std::string &basepath,
+			 const u32 nthreads,
+			 const u32 filethreads,
+			 const std::string &parfilename,
+			 const std::vector<std::string> &extrafiles,
+			 const u64 blocksize,
+			 const u32 firstblock,
+			 const Scheme recoveryfilescheme,
+			 const u32 recoveryfilecount,
+			 const u32 recoveryblockcount
+			 );
+
+// Verify or repair a 7z archive with appended PAR2 data
+Result par2repair_appended(std::ostream &sout,
+			  std::ostream &serr,
+			  const NoiseLevel noiselevel,
+			  const size_t memorylimit,
+			  const std::string &basepath,
+			  const u32 nthreads,
+			  const u32 filethreads,
+			  const std::string &parfilename,
+			  const bool dorepair,
+			  const bool purgefiles,
+			  const bool renameonly,
+			  const bool skipdata,
+			  const u64 skipleaway
+			  );
+
 #endif // __LIBPAR2_H__

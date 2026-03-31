@@ -74,62 +74,104 @@ int main(int argc, char* argv[])
     switch (commandline->GetOperation())
     {
       case CommandLine::opCreate:
-	// Create recovery data
-	result = par2create(std::cout,
-			    std::cerr,
-			    commandline->GetNoiseLevel(),
-			    commandline->GetMemoryLimit(),
-			    commandline->GetBasePath(),
-			    commandline->GetNumThreads(),
-			    commandline->GetFileThreads(),
-			    commandline->GetParFilename(),
-			    commandline->GetExtraFiles(),
+        if (commandline->GetAppend())
+        {
+            // Create recovery data and append to 7z archive
+            result = par2create_append(std::cout,
+                        std::cerr,
+                        commandline->GetNoiseLevel(),
+                        commandline->GetMemoryLimit(),
+                        commandline->GetBasePath(),
+                        commandline->GetNumThreads(),
+                        commandline->GetFileThreads(),
+                        commandline->GetParFilename(),
+                        commandline->GetExtraFiles(),
+                        commandline->GetBlockSize(),
+                        commandline->GetFirstRecoveryBlock(),
+                        commandline->GetRecoveryFileScheme(),
+                        commandline->GetRecoveryFileCount(),
+                        commandline->GetRecoveryBlockCount()
+                        );
+        }
+        else
+        {
+            // Create recovery data
+            result = par2create(std::cout,
+                        std::cerr,
+                        commandline->GetNoiseLevel(),
+                        commandline->GetMemoryLimit(),
+                        commandline->GetBasePath(),
+                        commandline->GetNumThreads(),
+                        commandline->GetFileThreads(),
+                        commandline->GetParFilename(),
+                        commandline->GetExtraFiles(),
 
-			    commandline->GetBlockSize(),
+                        commandline->GetBlockSize(),
 
-			    commandline->GetFirstRecoveryBlock(),
-			    commandline->GetRecoveryFileScheme(),
-			    commandline->GetRecoveryFileCount(),
-			    commandline->GetRecoveryBlockCount()
-			    );
-
+                        commandline->GetFirstRecoveryBlock(),
+                        commandline->GetRecoveryFileScheme(),
+                        commandline->GetRecoveryFileCount(),
+                        commandline->GetRecoveryBlockCount()
+                        );
+        }
         break;
       case CommandLine::opVerify:
       case CommandLine::opRepair:
         {
           // Verify or Repair damaged files
-          switch (commandline->GetVersion())
+          if (commandline->GetAppended())
           {
-            case CommandLine::verPar1:
-	      result = par1repair(std::cout,
-				  std::cerr,
-				  commandline->GetNoiseLevel(),
-				  commandline->GetMemoryLimit(),
-				  commandline->GetNumThreads(),
-				  commandline->GetParFilename(),
-				  commandline->GetExtraFiles(),
-				  commandline->GetOperation() == CommandLine::opRepair,
-				  commandline->GetPurgeFiles());
+            // Verify/repair from appended PAR2 in 7z archive
+            result = par2repair_appended(std::cout,
+                      std::cerr,
+                      commandline->GetNoiseLevel(),
+                      commandline->GetMemoryLimit(),
+                      commandline->GetBasePath(),
+                      commandline->GetNumThreads(),
+                      commandline->GetFileThreads(),
+                      commandline->GetParFilename(),
+                      commandline->GetOperation() == CommandLine::opRepair,
+                      commandline->GetPurgeFiles(),
+                      commandline->GetRenameOnly(),
+                      commandline->GetSkipData(),
+                      commandline->GetSkipLeaway());
+          }
+          else
+          {
+            // Verify or Repair damaged files
+            switch (commandline->GetVersion())
+            {
+              case CommandLine::verPar1:
+                result = par1repair(std::cout,
+                            std::cerr,
+                            commandline->GetNoiseLevel(),
+                            commandline->GetMemoryLimit(),
+                            commandline->GetNumThreads(),
+                            commandline->GetParFilename(),
+                            commandline->GetExtraFiles(),
+                            commandline->GetOperation() == CommandLine::opRepair,
+                            commandline->GetPurgeFiles());
 
-              break;
-            case CommandLine::verPar2:
-	      result = par2repair(std::cout,
-				  std::cerr,
-				  commandline->GetNoiseLevel(),
-				  commandline->GetMemoryLimit(),
-				  commandline->GetBasePath(),
-				  commandline->GetNumThreads(),
-				  commandline->GetFileThreads(),
-				  commandline->GetParFilename(),
-				  commandline->GetExtraFiles(),
-				  commandline->GetOperation() == CommandLine::opRepair,
-				  commandline->GetPurgeFiles(),
-				  commandline->GetRenameOnly(),
-				  commandline->GetSkipData(),
-				  commandline->GetSkipLeaway());
-              break;
-	    default:
-              break;
+                  break;
+                case CommandLine::verPar2:
+                  result = par2repair(std::cout,
+                              std::cerr,
+                              commandline->GetNoiseLevel(),
+                              commandline->GetMemoryLimit(),
+                              commandline->GetBasePath(),
+                              commandline->GetNumThreads(),
+                              commandline->GetFileThreads(),
+                              commandline->GetParFilename(),
+                              commandline->GetExtraFiles(),
+                              commandline->GetOperation() == CommandLine::opRepair,
+                              commandline->GetPurgeFiles(),
+                              commandline->GetRenameOnly(),
+                              commandline->GetSkipData(),
+                              commandline->GetSkipLeaway());
+                  break;
+              default:
+                  break;
+            }
           }
         }
         break;

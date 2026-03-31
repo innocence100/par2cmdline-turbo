@@ -87,6 +87,38 @@ Result par2repair(std::ostream &sout,
 }
 
 
+Result par2repair_appended(std::ostream &sout,
+			  std::ostream &serr,
+			  const NoiseLevel noiselevel,
+			  const size_t memorylimit,
+			  const std::string &basepath,
+			  const u32 nthreads,
+			  const u32 filethreads,
+			  const std::string &parfilename,
+			  const bool dorepair,
+			  const bool purgefiles,
+			  const bool renameonly,
+			  const bool skipdata,
+			  const u64 skipleaway
+			  )
+{
+  Par2Repairer repairer(sout, serr, noiselevel);
+  Result result = repairer.ProcessFrom7z(
+				   memorylimit,
+				   basepath,
+				   nthreads,
+				   filethreads,
+				   parfilename,
+				   dorepair,
+				   purgefiles,
+				   renameonly,
+				   skipdata,
+				   skipleaway);
+
+  return result;
+}
+
+
 Result par1repair(std::ostream &sout,
 		  std::ostream &serr,
 		  const NoiseLevel noiselevel,

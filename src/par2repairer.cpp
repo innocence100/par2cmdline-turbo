@@ -20,6 +20,7 @@
 
 #include "libpar2internal.h"
 #include "foreach_parallel.h"
+#include "append7z.h"
 
 #ifdef _MSC_VER
 #ifdef _DEBUG
@@ -38,6 +39,8 @@ Par2Repairer::Par2Repairer(std::ostream &sout, std::ostream &serr, const NoiseLe
 : sout(sout)
 , serr(serr)
 , noiselevel(noiselevel)
+, appendedMode(false)
+, appendedArchiveSize(0)
 , searchpath()
 , basepath()
 , setid()
@@ -356,8 +359,268 @@ Result Par2Repairer::Process(
   return eSuccess;
 }
 
+// Process a 7z file with appended PAR2 data
+Result Par2Repairer::ProcessFrom7z(
+     const size_t memorylimit,
+     const std::string &_basepath,
+     const u32 nthreads,
+     const u32 _filethreads,
+     std::string filename,
+     const bool dorepair,
+     const bool purgefiles,
+     const bool renameonly,
+     const bool _skipdata,
+     const u64 _skipleaway
+     )
+{
+  filethreads = _filethreads;
+  skipdata = _skipdata;
+  skipleaway = _skipleaway;
+  basepath = _basepath;
+
+  // Mark that we are in appended mode
+  appendedMode = true;
+  appendedInputFile = filename;
+
+  // Find where PAR2 data starts in the 7z file
+  u64 archiveSize = 0;
+  u64 par2Offset = FindAppendedPar2Offset(filename, archiveSize);
+  
+  if (par2Offset == 0)
+  {
+    serr << "No appended PAR2 data found in file: " << filename << std::endl;
+    return eInsufficientCriticalData;
+  }
+  
+  appendedArchiveSize = archiveSize;
+  
+  if (noiselevel > nlSilent)
+  {
+    sout << "Found appended PAR2 data in 7z archive." << std::endl;
+    sout << "  7z archive size: " << archiveSize << " bytes" << std::endl;
+    sout << "  PAR2 data starts at offset: " << par2Offset << std::endl;
+  }
+
+  // Determine the searchpath from the location of the file
+  std::string name;
+  DiskFile::SplitFilename(filename, searchpath, name);
+  
+  // For appended mode, use searchpath as basepath if basepath is not set
+  // This ensures output files are created in the same directory as the input
+  if (basepath.empty())
+  {
+    basepath = searchpath;
+  }
+  
+  if (noiselevel > nlDebug)
+  {
+    sout << "[DEBUG] ProcessFrom7z: basepath = '" << basepath << "'" << std::endl;
+    sout << "[DEBUG] ProcessFrom7z: searchpath = '" << searchpath << "'" << std::endl;
+    sout << "[DEBUG] ProcessFrom7z: name = '" << name << "'" << std::endl;
+  }
+
+  par2list.push_back(filename);
+
+  // Load packets from the 7z file starting at PAR2 offset
+  if (!LoadPacketsFromFile(searchpath + name, par2Offset))
+    return eLogicError;
+
+  if (noiselevel > nlQuiet)
+    sout << std::endl;
+
+  // Check that the packets are consistent and discard any that are not
+  if (!CheckPacketConsistency())
+    return eInsufficientCriticalData;
+
+  // Use the information in the main packet to get the source files
+  // into the correct order and determine their filenames
+  if (!CreateSourceFileList())
+    return eLogicError;
+
+  // Determine the total number of DataBlocks for the recoverable source files
+  // The allocate the DataBlocks and assign them to each source file
+  if (!AllocateSourceBlocks())
+    return eLogicError;
+
+  // Create a verification hash table for all files for which we have not
+  // found a complete version of the file and for which we have
+  // a verification packet
+  if (!PrepareVerificationHashTable())
+    return eLogicError;
+
+  // Compute the table for the sliding CRC computation
+  if (!ComputeWindowTable())
+    return eLogicError;
+
+  // For appended PAR2, the source file IS the input file (with PAR2 appended)
+  // We need to add the input file to extrafiles so it can be found during verification
+  std::vector<std::string> extrafiles;
+  extrafiles.push_back(searchpath + name);
+
+  // Attempt to verify all of the source files
+  if (!VerifySourceFiles(basepath, extrafiles))
+    return eFileIOError;
+
+  if (completefilecount < mainpacket->RecoverableFileCount())
+  {
+    // Scan any extra files specified on the command line
+    if (!VerifyExtraFiles(extrafiles, basepath, renameonly))
+      return eLogicError;
+  }
+
+  // Find out how much data we have found
+  UpdateVerificationResults();
+
+  if (noiselevel > nlSilent)
+    sout << std::endl;
+
+  // Check the verification results and report the results
+  if (!CheckVerificationResults())
+    return eRepairNotPossible;
+
+  // For repair mode, NOW change the target filename to input.7z.repaired
+  // This must happen AFTER verification but BEFORE CreateTargetFiles
+  if (dorepair && !sourcefiles.empty())
+  {
+    for (auto *sf : sourcefiles)
+    {
+      if (sf)
+      {
+        // Get original target filename from PAR2
+        std::string originalName = sf->TargetFileName();
+        // Get just the filename (strip any path)
+        std::string baseName = originalName;
+        size_t lastSlash = baseName.find_last_of("/\\");
+        if (lastSlash != std::string::npos)
+        {
+          baseName = baseName.substr(lastSlash + 1);
+        }
+        
+        // Create repaired filename: file.7z.repaired
+        std::string repairedName;
+        if (baseName.length() > 3 && 
+            (baseName.substr(baseName.length() - 3) == ".7z" ||
+             baseName.substr(baseName.length() - 3) == ".7Z"))
+        {
+          repairedName = basepath + baseName + ".repaired";
+        }
+        else
+        {
+          repairedName = basepath + baseName + ".repaired";
+        }
+        
+        if (noiselevel > nlSilent)
+        {
+          sout << "Repair output: " << repairedName << std::endl;
+        }
+        
+        // Set the target filename for repaired output
+        sf->SetTargetFileName(repairedName);
+        // Mark target as not existing so CreateTargetFiles will create it
+        sf->SetTargetExists(false);
+      }
+    }
+  }
+
+  // Are any of the files incomplete
+  if (completefilecount < mainpacket->RecoverableFileCount())
+  {
+    // Do we want to carry out a repair
+    if (dorepair)
+    {
+      // For appended PAR2 mode, we always need to extract the data
+      // even if all blocks are found (missingblockcount == 0)
+      if (missingblockcount > 0 || appendedMode)
+      {
+        // For appended PAR2 mode, we don't rename the source file
+        // Instead we create a new .repaired file and copy good blocks + recovered blocks
+        if (!appendedMode)
+        {
+          // Rename any damaged or missnamed target files.
+          if (!RenameTargetFiles())
+            return eFileIOError;
+        }
+
+        // Work out which files are being repaired, create them, and allocate
+        // target DataBlocks to them, and remember them for later verification.
+        if (!CreateTargetFiles())
+          return eFileIOError;
+
+        // Work out which data blocks are available, which need to be copied
+        // directly to the output, and which need to be recreated, and compute
+        // the appropriate Reed Solomon matrix.
+        if (!ComputeRSmatrix())
+          return eLogicError;
+
+        // Allocate memory buffers for reading and writing data to disk.
+        if (!AllocateBuffers(memorylimit))
+          return eFileIOError;
+
+        // Set the total amount of data to be processed.
+        progress = 0;
+        totaldata = blocksize * sourceblockcount;
+
+        // Read source data, process it through the RS matrix and write it to disk.
+        if (!ProcessData(0, blocksize))
+          return eFileIOError;
+
+        // Verify that all of the reconstructed target files are now correct
+        if (!VerifyTargetFiles(basepath))
+        {
+          // Remove any incomplete repaired files (but not for appended mode)
+          if (!appendedMode)
+          {
+            DeleteIncompleteTargetFiles();
+          }
+          return eRepairFailed;
+        }
+
+        // Delete all of the partly reconstructed files (but not for appended mode)
+        if (!appendedMode)
+        {
+          DeleteIncompleteTargetFiles();
+        }
+      }
+
+      if (noiselevel > nlSilent)
+        sout << std::endl;
+
+      if (noiselevel > nlQuiet)
+        sout << "Repair complete." << std::endl;
+    }
+    else
+    {
+      if (noiselevel > nlSilent)
+        sout << std::endl;
+
+      if (missingblockcount > 0)
+      {
+        if (noiselevel > nlQuiet)
+          serr << "You have " << missingblockcount << " missing blocks." << std::endl;
+        return eRepairPossible;
+      }
+    }
+  }
+  else
+  {
+    if (noiselevel > nlSilent)
+      sout << std::endl;
+
+    if (noiselevel > nlQuiet)
+      sout << "All files are correct, repair is not required." << std::endl;
+  }
+
+  if (purgefiles == true)
+  {
+    RemoveBackupFiles();
+    RemoveParFiles();
+  }
+
+  return eSuccess;
+}
+
 // Load the packets from the specified file
-bool Par2Repairer::LoadPacketsFromFile(std::string filename)
+bool Par2Repairer::LoadPacketsFromFile(std::string filename, u64 startOffset)
 {
   // Skip the file if it has already been processed
   if (diskFileMap.Find(filename) != 0)
@@ -381,7 +644,14 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
     std::string path;
     std::string name;
     DiskFile::SplitFilename(filename, path, name);
-    sout << "Loading \"" << name << "\"." << std::endl;
+    if (startOffset > 0)
+    {
+      sout << "Loading \"" << name << "\" (from appended PAR2 at offset " << startOffset << ")." << std::endl;
+    }
+    else
+    {
+      sout << "Loading \"" << name << "\"." << std::endl;
+    }
   }
 
   // How many useable packets have we found
@@ -404,8 +674,8 @@ bool Par2Repairer::LoadPacketsFromFile(std::string filename)
     // Progress indicator
     u64 progress = 0;
 
-    // Start at the beginning of the file
-    u64 offset = 0;
+    // Start at the specified offset (for appended PAR2 in 7z files)
+    u64 offset = startOffset;
 
     // Continue as long as there is at least enough for the packet header
     while (offset + sizeof(PACKET_HEADER) <= filesize)
@@ -2764,6 +3034,11 @@ bool Par2Repairer::VerifyTargetFiles(const std::string &basepath)
     // Re-open the target file
     if (!targetfile->Open())
     {
+      if (noiselevel > nlSilent)
+      {
+        std::lock_guard<std::mutex> lock(output_lock);
+        serr << "[DEBUG] VerifyTargetFiles: Failed to open target file: \"" << targetfile->FileName() << "\"" << std::endl;
+      }
       finalresult.store(false, std::memory_order_relaxed);
       return;
     }
